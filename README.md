@@ -4,6 +4,12 @@
 
 ---
 
+## 更新
+
+程序现在会使用 https://github.com/snakers4/silero-vad 尝试延长尾音
+
+---
+
 ## 使用方法
 
 [![在 Colab 中開啟](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1fxJaN8xhluWdJpXVh-ebo2r6hp8jxSYA)
