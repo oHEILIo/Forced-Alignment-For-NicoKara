@@ -59,27 +59,22 @@ def match_token(surface, phonetic):
 
     return result
 
-def get_vowel_for_chouon(prev_phonetic):
-    vowel_map = {
-        # あ行
-        'a': 'a', 'ka': 'a', 'ga': 'a', 'sa': 'a', 'za': 'a', 'ta': 'a', 'da': 'a',
-        'na': 'a', 'ha': 'a', 'ba': 'a', 'pa': 'a', 'ma': 'a', 'ya': 'a', 'ra': 'a', 'wa': 'a',
-        # い行
-        'i': 'i', 'ki': 'i', 'gi': 'i', 'shi': 'i', 'ji': 'i', 'chi': 'i', 'di': 'i',
-        'ni': 'i', 'hi': 'i', 'bi': 'i', 'pi': 'i', 'mi': 'i', 'ri': 'i',
-        # う行
-        'u': 'u', 'ku': 'u', 'gu': 'u', 'su': 'u', 'zu': 'u', 'tsu': 'u', 'du': 'u',
-        'nu': 'u', 'fu': 'u', 'bu': 'u', 'pu': 'u', 'mu': 'u', 'yu': 'u', 'ru': 'u',
-        # え行
-        'e': 'e', 'ke': 'e', 'ge': 'e', 'se': 'e', 'ze': 'e', 'te': 'e', 'de': 'e',
-        'ne': 'e', 'he': 'e', 'be': 'e', 'pe': 'e', 'me': 'e', 're': 'e',
-        # お行
-        'o': 'o', 'ko': 'o', 'go': 'o', 'so': 'o', 'zo': 'o', 'to': 'o', 'do': 'o',
-        'no': 'o', 'ho': 'o', 'bo': 'o', 'po': 'o', 'mo': 'o', 'yo': 'o', 'ro': 'o'
-    }
-    return vowel_map.get(prev_phonetic.lower())
+def process_custon(content):
+    token_list = []
+    if '/' in content:
+        parts = content.split('/', 1)
+        orig = parts[0]
+        ruby = parts[1]
+        if any(is_kanji(c) for c in orig):
+            for ri in ruby:
+                pi = kks.convert(ri)[0]['hepburn']
+                token_list.append({'orig': orig, 'type': 2, 'pron': pi, 'ruby': ri})
+                orig = ''
+        else:
+            token_list.append({'orig': orig, 'type': 3, 'pron': ruby})
+    return token_list
 
-def process_line(line):
+def process_token(line):
     token_list = []
     tokens = tokenizer.tokenize(line)
 
@@ -88,7 +83,6 @@ def process_line(line):
 
         # 英语
         if is_english(surface):
-            #print(f"  english:{surface}")
             token_list.append({'orig': surface, 'type': 1, 'pron': surface.lower()})
 
         # 汉字
@@ -109,7 +103,11 @@ def process_line(line):
                 prev_pron = None
                 for ri in phonetic:
                     if ri == 'ー':
-                        vowel = get_vowel_for_chouon(prev_pron)
+                        if not prev_pron:
+                            print(f"---无法处理长音符 {ri},前面的音节为 {prev_pron}---")
+                            vowel = None
+                        else:
+                            vowel = prev_pron[-1].lower()
                         token_list.append({'orig': surface, 'type': 2, 'pron': vowel, 'ruby': ri})
                     else:
                         pi = kks.convert(ri)[0]['hepburn']
@@ -124,12 +122,12 @@ def process_line(line):
                         prev_pron = None
                         for ri in m_phonetic:
                             if ri == 'ー':
-                                vowel = get_vowel_for_chouon(prev_pron)
-                                if vowel:
-                                    token_list.append({'orig': m_surface, 'type': 2, 'pron': vowel, 'ruby': ri})
+                                if not prev_pron:
+                                    print(f"---无法处理长音符 {ri},前面的音节为 {prev_pron}---")
+                                    vowel = None
                                 else:
-                                    print(f"---无法处理长音符 {ri}，前面的音节为 {prev_pron}---")
-                                    continue
+                                    vowel = prev_pron[-1].lower()
+                                token_list.append({'orig': surface, 'type': 2, 'pron': vowel, 'ruby': ri})
                             else:
                                 pi = kks.convert(ri)[0]['hepburn']
                                 token_list.append({'orig': m_surface, 'type': 2, 'pron': pi, 'ruby': ri})

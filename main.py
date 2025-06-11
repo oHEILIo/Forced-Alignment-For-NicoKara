@@ -132,7 +132,6 @@ def process_pron(result_list):
     while i < len(result_list):
         item = result_list[i]
 
-        # 处理不同类型的项目
         if item['type'] in [2, 3]:
             # 对于 type 2, 3，使用 pron 并添加空格
             if 'pron' in item and item['pron']:
@@ -147,12 +146,9 @@ def process_pron(result_list):
                     last_end_time = parse_time_to_hundredths(last_end)
                     current_line = ""
                     last_end = None
-            # 其他 type 0 项目（如空格、标点符号）跳过
-        # type 1 项目完全跳过
 
         i += 1
 
-    # 处理最后一行
     if current_line and last_end:
         current_line += f"{last_end}"
         result.append(current_line)
@@ -164,10 +160,16 @@ def main():
     with open('i.txt', 'r', encoding='utf-8') as file:
         for line in file:
             if line.strip():
-                #print(f"process line:{line.strip()}")
-                result_list.extend(normalize.process_line(line))
+                # 分割
+                parts = re.split(r'(\(\([^)]*\)\))', line.strip())  
+                for part in parts:
+                    if part:
+                        if part.startswith('((') and part.endswith('))'):
+                            content = part[2:-2]
+                            result_list.extend(normalize.process_custon(content))
+                        else:
+                            result_list.extend(normalize.process_token(part))
                 result_list.append({'orig': '\n', 'type': 0})
-                #print("")
 
     alignment_tokens = []
     token_to_index_map = {}
@@ -194,13 +196,13 @@ def main():
 
     main_output = process_main(result_list)
     ruby_output = process_ruby(result_list)
+    content = f"{main_output}\n{ruby_output}"
     sign_output = process_sign(result_list)
     pron_output = process_pron(result_list)
-    content = f"{main_output}\n{ruby_output}"
     
     with open('o.lrc', 'w', encoding='utf-8') as f:
         f.write(content)
-    with open('o1.lrc', 'w', encoding='utf-8') as f:  # 标记文件
+    with open('o1.lrc', 'w', encoding='utf-8') as f:
         f.write(sign_output)
     with open('o2.lrc', 'w', encoding='utf-8') as f:
         f.write(pron_output)
