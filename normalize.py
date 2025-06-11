@@ -104,37 +104,36 @@ def process_token(line):
                 for ri in phonetic:
                     if ri == 'ー':
                         if not prev_pron:
-                            print(f"---无法处理长音符 {ri},前面的音节为 {prev_pron}---")
-                            vowel = None
+                            print(f"---p无法处理长音符 {ri},前面的音节为 {prev_pron}---")
+                            pi = None
                         else:
-                            vowel = prev_pron[-1].lower()
-                        token_list.append({'orig': surface, 'type': 2, 'pron': vowel, 'ruby': ri})
+                            pi = prev_pron[-1].lower()
                     else:
-                        pi = kks.convert(ri)[0]['hepburn']
-                        token_list.append({'orig': surface, 'type': 2, 'pron': pi, 'ruby': ri})
+                        pi = kks.convert(ri)[0]['hepburn']    
                         prev_pron = pi
+                    token_list.append({'orig': surface, 'type': 2, 'pron': pi, 'ruby': ri})
                     surface = ''
             else:
                 #print(f"  kanji/kana:{surface}")
                 match_result = match_token(surface, phonetic)
+                prev_pron = None
                 for m_surface, m_phonetic in match_result:
-                    if any(is_kanji(c) for c in m_surface):
-                        prev_pron = None
+                    if any(is_kanji(c) for c in m_surface):              
                         for ri in m_phonetic:
                             if ri == 'ー':
                                 if not prev_pron:
-                                    print(f"---无法处理长音符 {ri},前面的音节为 {prev_pron}---")
-                                    vowel = None
+                                    print(f"---m无法处理长音符 {ri},前面的音节为 {prev_pron}---")
+                                    pi = None
                                 else:
-                                    vowel = prev_pron[-1].lower()
-                                token_list.append({'orig': surface, 'type': 2, 'pron': vowel, 'ruby': ri})
+                                    pi = prev_pron[-1].lower()
                             else:
-                                pi = kks.convert(ri)[0]['hepburn']
-                                token_list.append({'orig': m_surface, 'type': 2, 'pron': pi, 'ruby': ri})
+                                pi = kks.convert(ri)[0]['hepburn']                             
                                 prev_pron = pi
-                                m_surface = ''
+                            token_list.append({'orig': m_surface, 'type': 2, 'pron': pi, 'ruby': ri})
+                            m_surface = ''
                     else:
                         pi = kks.convert(m_surface)[0]['hepburn']
+                        prev_pron = pi
                         token_list.append({'orig': m_surface, 'type': 3, 'pron': pi})
 
         # 假名
