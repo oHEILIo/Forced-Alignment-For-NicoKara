@@ -15,91 +15,6 @@ def format_hundredths_to_time_str(total_hundredths):
     hundredths = remaining % 100
     return f"[{minutes:02d}:{seconds:02d}:{hundredths:02d}]"
 
-def get_silero_endpoints(audio_file, min_gap_seconds=0.5):
-    """获取Silero VAD的端点时间（百分秒格式）"""
-    model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad',
-                                  model='silero_vad',
-                                  force_reload=False,
-                                  trust_repo=True)
-    
-    get_speech_timestamps = utils[0]
-    read_audio = utils[2]
-    
-    wav = read_audio(audio_file)
-    speech_timestamps = get_speech_timestamps(
-        wav, 
-        model,
-        min_silence_duration_ms=int(min_gap_seconds * 1000)
-    )
-    
-    # 转换为百分秒格式
-    endpoints = []
-    for timestamp in speech_timestamps:
-        end_time_seconds = timestamp['end'] / 16000
-        hundredths = int(end_time_seconds * 100)
-        endpoints.append(hundredths)
-    
-    return endpoints
-
-def adjust_ends_with_silero(result_list, audio_file, min_gap_seconds=1.0):
-    """
-    使用Silero VAD的端点调整result_list中的end时间
-    
-    参数:
-    - result_list: 你的结果列表
-    - audio_file: 音频文件路径
-    - min_gap_seconds: Silero VAD的最小间隔时间
-    """
-    
-    # 获取Silero VAD的端点
-    silero_endpoints = get_silero_endpoints(audio_file, min_gap_seconds)
-    print(f"Silero VAD检测到的端点: {silero_endpoints}")
-    
-    if not silero_endpoints:
-        print("未检测到Silero VAD端点，不进行调整")
-        return
-    
-    # 收集所有有end的项目及其索引
-    end_items = []
-    for i, item in enumerate(result_list):
-        if 'end' in item:
-            end_time = parse_time_to_hundredths(item['end'])
-            end_items.append((i, end_time))
-    
-    if not end_items:
-        print("result_list中没有end项目")
-        return
-    
-    print(f"result_list中的end项目数量: {len(end_items)}")
-    
-    # 从第一个Silero端点开始比较
-    silero_index = 0
-    
-    for j in range(len(end_items)):
-        if silero_index >= len(silero_endpoints):
-            break
-            
-        current_item_index, current_end = end_items[j]
-        silero_end = silero_endpoints[silero_index]
-        
-        # 检查是否是最后一个end项目
-        if j == len(end_items) - 1:
-            # 最后一个end，取较大值
-            new_end = max(current_end, silero_end)
-            result_list[current_item_index]['end'] = format_hundredths_to_time_str(new_end)
-            print(f"最后一个end: {format_hundredths_to_time_str(current_end)} -> {format_hundredths_to_time_str(new_end)}")
-            break
-        
-        # 获取下一个end
-        next_item_index, next_end = end_items[j + 1]
-        
-        # 检查Silero端点是否在当前end和下一个end之间
-        if current_end <= silero_end <= next_end:
-            # 更新当前end为Silero端点
-            result_list[current_item_index]['end'] = format_hundredths_to_time_str(silero_end)
-            print(f"调整end: {format_hundredths_to_time_str(current_end)} -> {format_hundredths_to_time_str(silero_end)}")
-            silero_index += 1  # 使用下一个Silero端点
-
 def process_main(result_list):
     result = []
     current_line = ""
@@ -277,9 +192,9 @@ def main():
             result_list[original_index]['start'] = result['start']
             result_list[original_index]['end'] = result['end']
 
-    print("开始使用Silero VAD调整end时间...")
-    adjust_ends_with_silero(result_list, 'i.mp3', min_gap_seconds=1.0)
-    print("Silero VAD调整完成")
+    print("开始使用混合方法（Silero VAD + 音量检测）调整end时间...")
+    align.adjust_ends_with_hybrid(result_list, 'i.mp3', min_gap_seconds=0.3, volume_threshold=-40, tolerance=200)
+    print("混合方法调整完成")
 
     for item in result_list:
         print(item)
