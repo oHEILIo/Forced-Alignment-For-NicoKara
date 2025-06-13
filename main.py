@@ -191,6 +191,7 @@ def main():
             original_index = token_to_index_map[i]
             result_list[original_index]['start'] = result['start']
             result_list[original_index]['end'] = result['end']
+            result_list[original_index]['score'] = result['score']
 
     print("开始使用混合方法（Silero VAD + 音量检测）调整end时间...")
     align.adjust_ends_with_hybrid(result_list, 'i.mp3', min_gap_seconds=0.3, volume_threshold=-40, tolerance=200)
