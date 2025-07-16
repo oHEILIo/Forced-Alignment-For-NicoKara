@@ -1,10 +1,8 @@
 import torch
 import torchaudio
-import math
 import librosa
 import numpy as np
-import re
-from main import parse_time_to_hundredths, format_hundredths_to_time_str
+from utils import parse_time_to_hundredths, format_hundredths_to_time_str, format_time_from_seconds
 
 def align_audio_with_text(audio_file_path, text_tokens):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -41,15 +39,10 @@ def align_audio_with_text(audio_file_path, text_tokens):
             confidence_scores = [span.score for span in spans]
             avg_score = sum(confidence_scores) / len(confidence_scores)
             
-            def format_time(time_sec):
-                minutes, remainder = divmod(time_sec, 60)
-                seconds, centiseconds = divmod(remainder, 1)
-                return f"[{int(minutes):02d}:{int(seconds):02d}:{math.floor(centiseconds * 100):02d}]"
-            
             results.append({
                 'token': valid_tokens[i],
-                'start': format_time(start_time),
-                'end': format_time(end_time),
+                'start': format_time_from_seconds(start_time),
+                'end': format_time_from_seconds(end_time),
                 'score': round(avg_score, 4)  # 添加score，保留4位小数
             })
         return results
@@ -223,90 +216,112 @@ def choose_best_endpoint(candidates):
 def adjust_ends_with_hybrid(result_list, audio_file, min_gap_seconds=0.3, volume_threshold=-40, tolerance=200):
     """
     使用混合方法（Silero VAD + 音量检测）调整result_list中的end时间
-    
-    参数:
-    - result_list: 你的结果列表
-    - audio_file: 音频文件路径
-    - min_gap_seconds: 最小间隔时间
-    - volume_threshold: 音量阈值（dB）
-    - tolerance: 端点合并容忍度（百分秒）
+    优化了端点匹配逻辑，提高了尾音处理的准确性
     """
-    
-    print("开始获取Silero VAD端点...")
-    silero_endpoints = get_silero_endpoints(audio_file, min_gap_seconds)
-    print(f"Silero VAD检测到的端点: {silero_endpoints}")
-    
-    print("开始获取音量检测端点...")
-    volume_endpoints = get_volume_endpoints(audio_file, min_gap_seconds, volume_threshold)
-    print(f"音量检测到的端点: {volume_endpoints}")
-    
-    if not silero_endpoints and not volume_endpoints:
-        print("两种方法都未检测到端点，不进行调整")
-        return
-    
-    # 合并端点
-    print("开始合并端点...")
-    merged_endpoints = merge_endpoints(silero_endpoints, volume_endpoints, tolerance)
-    
-    print("合并后的端点:")
-    for ep in merged_endpoints:
-        confidence_str = f" (置信度: {ep.get('confidence', 'unknown')})" if 'confidence' in ep else ""
-        print(f"  时间: {format_hundredths_to_time_str(ep['time'])}, 来源: {ep['source']}{confidence_str}")
-    
-    # 收集所有有end的项目及其索引
-    end_items = []
-    for i, item in enumerate(result_list):
-        if 'end' in item:
-            end_time = parse_time_to_hundredths(item['end'])
-            end_items.append((i, end_time))
+    try:
+        print("开始获取Silero VAD端点...")
+        silero_endpoints = get_silero_endpoints(audio_file, min_gap_seconds)
+        print(f"Silero VAD检测到 {len(silero_endpoints)} 个端点")
+        
+        print("开始获取音量检测端点...")
+        volume_endpoints = get_volume_endpoints(audio_file, min_gap_seconds, volume_threshold)
+        print(f"音量检测到 {len(volume_endpoints)} 个端点")
+        
+        if not silero_endpoints and not volume_endpoints:
+            print("两种方法都未检测到端点，不进行调整")
+            return
+        
+        # 合并端点
+        merged_endpoints = merge_endpoints(silero_endpoints, volume_endpoints, tolerance)
+        print(f"合并后共 {len(merged_endpoints)} 个端点")
+        
+        # 应用智能端点匹配
+        apply_smart_endpoint_matching(result_list, merged_endpoints)
+        
+    except Exception as e:
+        print(f"端点调整过程中出现错误: {e}")
+        print("跳过端点调整，继续处理...")
+
+def apply_smart_endpoint_matching(result_list, merged_endpoints):
+    """
+    智能端点匹配算法，改进了原有的简单匹配逻辑
+    """
+    # 收集所有有end的项目
+    end_items = [(i, parse_time_to_hundredths(item['end'])) 
+                 for i, item in enumerate(result_list) if 'end' in item]
     
     if not end_items:
         print("result_list中没有end项目")
         return
     
-    print(f"result_list中的end项目数量: {len(end_items)}")
+    print(f"开始匹配 {len(end_items)} 个end项目与 {len(merged_endpoints)} 个端点")
     
-    # 调整end时间
-    endpoint_index = 0
+    # 为每个end项目找到最佳匹配的端点
+    for i, (item_index, current_end) in enumerate(end_items):
+        best_endpoint = find_best_endpoint_match(
+            current_end, merged_endpoints, end_items, i
+        )
+        
+        if best_endpoint:
+            new_end_time = best_endpoint['time']
+            # 只有当新端点明显更好时才调整
+            if should_adjust_endpoint(current_end, new_end_time, best_endpoint):
+                result_list[item_index]['end'] = format_hundredths_to_time_str(new_end_time)
+                print(f"调整end: {format_hundredths_to_time_str(current_end)} -> "
+                      f"{format_hundredths_to_time_str(new_end_time)} "
+                      f"(来源: {best_endpoint['source']}, 置信度: {best_endpoint.get('confidence', 'medium')})")
+
+def find_best_endpoint_match(current_end, merged_endpoints, end_items, current_index):
+    """
+    为当前end时间找到最佳匹配的端点
+    """
+    # 定义搜索范围
+    search_range = 500  # 5秒范围内搜索
     
-    for j in range(len(end_items)):
-        if endpoint_index >= len(merged_endpoints):
-            break
+    # 获取相邻end项目的时间约束
+    prev_end = end_items[current_index - 1][1] if current_index > 0 else 0
+    next_end = end_items[current_index + 1][1] if current_index < len(end_items) - 1 else float('inf')
+    
+    # 在合理范围内寻找候选端点
+    candidates = []
+    for endpoint in merged_endpoints:
+        ep_time = endpoint['time']
+        
+        # 端点必须在当前时间附近，且不能超出相邻项目的范围
+        if (abs(ep_time - current_end) <= search_range and 
+            prev_end < ep_time < next_end):
             
-        current_item_index, current_end = end_items[j]
-        merged_end = merged_endpoints[endpoint_index]['time']
-        
-        # 检查是否是最后一个end项目
-        if j == len(end_items) - 1:
-            # 最后一个end，取较大值
-            new_end = max(current_end, merged_end)
-            result_list[current_item_index]['end'] = format_hundredths_to_time_str(new_end)
-            source = merged_endpoints[endpoint_index]['source']
-            print(f"最后一个end: {format_hundredths_to_time_str(current_end)} -> {format_hundredths_to_time_str(new_end)} (来源: {source})")
-            break
-        
-        # 获取下一个end
-        next_item_index, next_end = end_items[j + 1]
-        
-        # 检查合并端点是否在当前end和下一个end之间
-        if current_end <= merged_end <= next_end:
-            # 更新当前end为合并端点
-            result_list[current_item_index]['end'] = format_hundredths_to_time_str(merged_end)
-            source = merged_endpoints[endpoint_index]['source']
-            confidence = merged_endpoints[endpoint_index].get('confidence', '')
-            print(f"调整end: {format_hundredths_to_time_str(current_end)} -> {format_hundredths_to_time_str(merged_end)} (来源: {source}, 置信度: {confidence})")
-            endpoint_index += 1  # 使用下一个合并端点
-        else:
-            # 如果当前合并端点不在范围内，尝试找到合适的端点
-            while (endpoint_index < len(merged_endpoints) and 
-                   merged_endpoints[endpoint_index]['time'] < current_end):
-                endpoint_index += 1
+            # 计算匹配分数
+            distance_score = 1.0 - (abs(ep_time - current_end) / search_range)
+            confidence_score = 1.0 if endpoint.get('confidence') == 'high' else 0.7
+            source_score = 1.0 if endpoint['source'] == 'silero' else 0.8
             
-            if (endpoint_index < len(merged_endpoints) and 
-                merged_endpoints[endpoint_index]['time'] <= next_end):
-                merged_end = merged_endpoints[endpoint_index]['time']
-                result_list[current_item_index]['end'] = format_hundredths_to_time_str(merged_end)
-                source = merged_endpoints[endpoint_index]['source']
-                confidence = merged_endpoints[endpoint_index].get('confidence', '')
-                print(f"调整end: {format_hundredths_to_time_str(current_end)} -> {format_hundredths_to_time_str(merged_end)} (来源: {source}, 置信度: {confidence})")
-                endpoint_index += 1
+            total_score = distance_score * confidence_score * source_score
+            candidates.append((endpoint, total_score))
+    
+    # 返回得分最高的候选
+    if candidates:
+        return max(candidates, key=lambda x: x[1])[0]
+    return None
+
+def should_adjust_endpoint(current_end, new_end, endpoint_info):
+    """
+    判断是否应该调整端点
+    """
+    time_diff = abs(new_end - current_end)
+    
+    # 如果时间差很小，不调整
+    if time_diff < 20:  # 0.2秒
+        return False
+    
+    # 如果是高置信度的端点，且时间差合理，则调整
+    if endpoint_info.get('confidence') == 'high' and time_diff < 300:  # 3秒
+        return True
+    
+    # 如果新端点明显更晚（处理尾音延长），且来源可靠
+    if (new_end > current_end and 
+        time_diff < 200 and  # 2秒内
+        endpoint_info['source'] == 'silero'):
+        return True
+    
+    return False

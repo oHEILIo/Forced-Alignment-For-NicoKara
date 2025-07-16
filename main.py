@@ -1,167 +1,74 @@
 import normalize
 import align
+import formatter
 import re
-import torch
-
-def parse_time_to_hundredths(time_str):
-    match = re.match(r'\[(\d{2}):(\d{2}):(\d{2})\]', time_str)
-    minutes, seconds, hundredths = int(match.group(1)), int(match.group(2)), int(match.group(3))
-    return minutes * 6000 + seconds * 100 + hundredths
-
-def format_hundredths_to_time_str(total_hundredths):
-    minutes = total_hundredths // 6000
-    remaining = total_hundredths % 6000
-    seconds = remaining // 100
-    hundredths = remaining % 100
-    return f"[{minutes:02d}:{seconds:02d}:{hundredths:02d}]"
-
-def process_main(result_list):
-    result = []
-    current_line = ""
-    last_end = None
-    last_end_time = None
-
-    i = 0
-    while i < len(result_list):
-        item = result_list[i]
-        
-        if item['type'] in [1, 3]:
-            current_line += f"{item['start']}{item['orig']}"
-            last_end = item['end']
-        elif item['type'] == 2:
-            if item['orig'] != '':
-                current_line += f"{item['start']}{item['orig']}"
-            last_end = item['end']
-        elif item['type'] == 0:
-            if item['orig'] == '\n':
-                if last_end:
-                    current_line += f"{last_end}\n"
-                    result.append(current_line)
-                    last_end_time = parse_time_to_hundredths(last_end)
-                    current_line = ""
-                    last_end = None
-            else:
-                current_line += item['orig']
-        i += 1
-
-    if current_line and last_end:
-        current_line += f"{last_end}"
-        result.append(current_line)
-    result.append("\n")
-    return "".join(result)
-
-def process_ruby(result_list):
-    ruby_annotations = []
-    i = 0
-
-    while i < len(result_list):
-        item = result_list[i]
-
-        if item['type'] == 2 and item['orig'] != '':
-            ruby1 = item['orig']
-            ruby2 = item['ruby']
-            ruby3 = item['start']
-            ruby4 = ''
-
-            first_start_time = parse_time_to_hundredths(item['start'])
-
-            j = i + 1
-            while j < len(result_list) and result_list[j]['type'] == 2 and result_list[j]['orig'] == '':
-                current_item = result_list[j]
-                current_start_time = parse_time_to_hundredths(current_item['start'])
-                time_diff = current_start_time - first_start_time
-                time_diff_str = format_hundredths_to_time_str(time_diff)
-                ruby2 += f"{time_diff_str}{current_item['ruby']}"
-                j += 1
-
-            for k in range(len(ruby_annotations) - 1, -1, -1):
-                if ruby_annotations[k]['ruby1'] == ruby1:
-                    ruby_annotations[k]['ruby4'] = item['start']
-                    break
-
-            ruby_annotations.append({'ruby1': ruby1, 'ruby2': ruby2, 'ruby3': ruby3, 'ruby4': ruby4})
-            i = j
-        else:
-            i += 1
-
-    result = []
-    for idx, annotation in enumerate(ruby_annotations, 1):
-        result.append(f"@Ruby{idx}={annotation['ruby1']},{annotation['ruby2']},{annotation['ruby3']},{annotation['ruby4']}")
-
-    return "\n".join(result)
-
-def process_sign(result_list):
-    markers = []
-    last_end_time = None
-    line_started = False
-
-    i = 0
-    while i < len(result_list):
-        item = result_list[i]
-
-        if ('start' in item and not line_started and item['type'] in [1, 2, 3]):
-            current_start_time = parse_time_to_hundredths(item['start'])
-
-            if ((last_end_time and current_start_time - last_end_time > 1000) or
-                (last_end_time is None and current_start_time > 500)):
-                marker_time = max(0, current_start_time - 300)
-                marker_time_str = format_hundredths_to_time_str(marker_time)
-                # 颠倒时间戳顺序
-                markers.append(f"{item['start']}⬤⬤⬤{marker_time_str}")
-            
-            line_started = True
-
-        # 处理行结束
-        if item['type'] == 0 and item['orig'] == '\n':
-            line_started = False
-            for j in range(i - 1, -1, -1):
-                if 'end' in result_list[j] and result_list[j]['type'] in [1, 2, 3]:
-                    last_end_time = parse_time_to_hundredths(result_list[j]['end'])
-                    break
-
-        i += 1
-
-    return "\n".join(markers) + "\n" if markers else ""
-
-def process_pron(result_list):
-    result = []
-    current_line = ""
-    last_end = None
-    last_end_time = None
-
-    i = 0
-    while i < len(result_list):
-        item = result_list[i]
-
-        if item['type'] in [2, 3]:
-            # 对于 type 2, 3，使用 pron 并添加空格
-            if 'pron' in item and item['pron']:
-                current_line += f"{item['start']}{item['pron']} "
-                last_end = item['end']
-        elif item['type'] == 0:
-            # 对于 type 0，只处理换行符
-            if item['orig'] == '\n':
-                if last_end:
-                    current_line += f"{last_end}\n"
-                    result.append(current_line)
-                    last_end_time = parse_time_to_hundredths(last_end)
-                    current_line = ""
-                    last_end = None
-
-        i += 1
-
-    if current_line and last_end:
-        current_line += f"{last_end}"
-        result.append(current_line)
-    result.append("\n")
-    return "".join(result)
+from utils import is_english
 
 def main():
+    """Main entry point with parameter adjustment capabilities"""
+    # Configuration parameters - easily adjustable
+    config = {
+        'input_text': 'i.txt',
+        'input_audio': 'i.mp3',
+        'min_gap_seconds': 0.3,
+        'volume_threshold': -40,
+        'tolerance': 200,
+        'enable_vad_adjustment': True,
+        'enable_score_correction': True,
+        'debug_output': True
+    }
+    
+    print("开始处理文本...")
+    result_list = process_input_text(config['input_text'])
+    
+    print("开始音频对齐...")
+    alignment_tokens, token_to_index_map = prepare_alignment_tokens(result_list)
+    
+    # Validate alignment tokens
+    validate_alignment_tokens(alignment_tokens)
+    
+    # Perform alignment
+    alignment_results = align.align_audio_with_text(config['input_audio'], alignment_tokens)
+    
+    # Apply alignment results to result_list
+    apply_alignment_results(result_list, alignment_results, token_to_index_map)
+    
+    # Apply VAD adjustment if enabled
+    if config['enable_vad_adjustment']:
+        print("开始使用混合方法（Silero VAD + 音量检测）调整end时间...")
+        align.adjust_ends_with_hybrid(
+            result_list, 
+            config['input_audio'], 
+            min_gap_seconds=config['min_gap_seconds'],
+            volume_threshold=config['volume_threshold'], 
+            tolerance=config['tolerance']
+        )
+        print("混合方法调整完成")
+    
+    # Apply score-based correction if enabled
+    if config['enable_score_correction']:
+        print("开始基于置信度分数的微调...")
+        apply_score_based_correction(result_list)
+        print("分数微调完成")
+    
+    # Debug output
+    if config['debug_output']:
+        print("\n处理结果:")
+        for item in result_list:
+            print(item)
+    
+    # Generate output files
+    print("生成输出文件...")
+    formatter.save_output_files(result_list)
+    print("处理完成！")
+
+def process_input_text(input_file):
+    """Process input text file and return token list"""
     result_list = []
-    with open('i.txt', 'r', encoding='utf-8') as file:
+    with open(input_file, 'r', encoding='utf-8') as file:
         for line in file:
             if line.strip():
-                # 分割
+                # Split custom pronunciation patterns
                 parts = re.split(r'(\(\([^)]*\)\))', line.strip())  
                 for part in parts:
                     if part:
@@ -171,21 +78,28 @@ def main():
                         else:
                             result_list.extend(normalize.process_token(part))
                 result_list.append({'orig': '\n', 'type': 0})
+    return result_list
 
+def prepare_alignment_tokens(result_list):
+    """Prepare tokens for alignment and create mapping"""
     alignment_tokens = []
     token_to_index_map = {}
+    
     for i, item in enumerate(result_list):
         if 'pron' in item and item['pron']:
             alignment_tokens.append(item['pron'])
             token_to_index_map[len(alignment_tokens) - 1] = i
+    
+    return alignment_tokens, token_to_index_map
 
+def validate_alignment_tokens(alignment_tokens):
+    """Validate alignment tokens for potential issues"""
     for item in alignment_tokens:
-        if normalize.is_english(item):
-            continue
-        else:
-            print(f"alignment_tokens可能包含错误数据{item}")
+        if not is_english(item):
+            print(f"警告: alignment_tokens可能包含错误数据: {item}")
 
-    alignment_results = align.align_audio_with_text('i.mp3', alignment_tokens)
+def apply_alignment_results(result_list, alignment_results, token_to_index_map):
+    """Apply alignment results to the result list"""
     for i, result in enumerate(alignment_results):
         if i in token_to_index_map:
             original_index = token_to_index_map[i]
@@ -193,25 +107,166 @@ def main():
             result_list[original_index]['end'] = result['end']
             result_list[original_index]['score'] = result['score']
 
-    print("开始使用混合方法（Silero VAD + 音量检测）调整end时间...")
-    align.adjust_ends_with_hybrid(result_list, 'i.mp3', min_gap_seconds=0.3, volume_threshold=-40, tolerance=200)
-    print("混合方法调整完成")
-
-    for item in result_list:
-        print(item)
-
-    main_output = process_main(result_list)
-    ruby_output = process_ruby(result_list)
-    content = f"{main_output}\n{ruby_output}"
-    sign_output = process_sign(result_list)
-    pron_output = process_pron(result_list)
+def apply_score_based_correction(result_list):
+    """
+    基于置信度分数的智能行级微调算法
+    以每行为单位，用高分项目作为基准调整低分项目
+    """
+    print("开始基于置信度的行级时间微调...")
     
-    with open('o.lrc', 'w', encoding='utf-8') as f:
-        f.write(content)
-    with open('o1.lrc', 'w', encoding='utf-8') as f:
-        f.write(sign_output)
-    with open('o2.lrc', 'w', encoding='utf-8') as f:
-        f.write(pron_output)
+    # 按行分组处理
+    lines = group_items_by_line(result_list)
+    
+    total_adjustments = 0
+    for line_items in lines:
+        adjustments = process_line_score_adjustment(line_items)
+        total_adjustments += adjustments
+    
+    if total_adjustments > 0:
+        print(f"完成行级微调，共调整了 {total_adjustments} 个时间点")
+    else:
+        print("未发现需要调整的时间点")
+
+def group_items_by_line(result_list):
+    """将result_list按行分组，每两个换行符之间为一行"""
+    lines = []
+    current_line = []
+    
+    for item in result_list:
+        if item['type'] == 0 and item['orig'] == '\n':
+            if current_line:
+                lines.append(current_line)
+                current_line = []
+        else:
+            current_line.append(item)
+    
+    # 处理最后一行（如果没有以换行符结尾）
+    if current_line:
+        lines.append(current_line)
+    
+    return lines
+
+def process_line_score_adjustment(line_items):
+    """
+    处理单行的分数调整
+    返回调整的项目数量
+    """
+    # 筛选有时间信息和分数的项目
+    timed_items = [item for item in line_items 
+                   if 'start' in item and 'end' in item and 'score' in item]
+    
+    if len(timed_items) < 4:  # 条目数太少则跳过
+        return 0
+    
+    # 按分数排序
+    sorted_items = sorted(timed_items, key=lambda x: x['score'], reverse=True)
+    
+    # 分为高分组和低分组
+    mid_point = len(sorted_items) // 2
+    high_score_items = sorted_items[:mid_point]
+    low_score_items = sorted_items[mid_point:]
+    
+    # 检查高分组的质量
+    high_score_avg = sum(item['score'] for item in high_score_items) / len(high_score_items)
+    if high_score_avg < 0.5:
+        print(f"警告: 检测到整体得分较低的行 (平均分: {high_score_avg:.3f})，可能影响调整效果")
+        return 0
+    
+    # 执行调整
+    return adjust_low_score_items(high_score_items, low_score_items)
+
+def adjust_low_score_items(high_score_items, low_score_items):
+    """
+    基于高分项目调整低分项目的时间
+    """
+    from utils import parse_time_to_hundredths, format_hundredths_to_time_str
+    
+    # 构建高分项目的时间基准
+    high_score_times = []
+    for item in high_score_items:
+        start_time = parse_time_to_hundredths(item['start'])
+        end_time = parse_time_to_hundredths(item['end'])
+        high_score_times.append((start_time, end_time, item['score']))
+    
+    # 按时间排序
+    high_score_times.sort(key=lambda x: x[0])
+    
+    adjustments_made = 0
+    
+    for low_item in low_score_items:
+        current_start = parse_time_to_hundredths(low_item['start'])
+        current_end = parse_time_to_hundredths(low_item['end'])
+        
+        # 找到最佳的调整参考
+        adjustment = calculate_optimal_adjustment(
+            current_start, current_end, high_score_times, low_item['score']
+        )
+        
+        if adjustment != 0:
+            # 应用调整
+            new_start = max(0, current_start + adjustment)
+            new_end = max(new_start + 10, current_end + adjustment)  # 确保end > start
+            
+            # 验证调整的合理性
+            if is_adjustment_valid(new_start, new_end, high_score_times):
+                low_item['start'] = format_hundredths_to_time_str(new_start)
+                low_item['end'] = format_hundredths_to_time_str(new_end)
+                adjustments_made += 1
+    
+    return adjustments_made
+
+def calculate_optimal_adjustment(current_start, current_end, high_score_times, current_score):
+    """
+    计算最优的时间调整量
+    """
+    if not high_score_times:
+        return 0
+    
+    # 找到时间上最接近的高分项目
+    closest_ref = min(high_score_times, 
+                     key=lambda x: abs(x[0] - current_start))
+    
+    ref_start, ref_end, ref_score = closest_ref
+    
+    # 计算调整强度（基于分数差异）
+    score_diff = ref_score - current_score
+    if score_diff <= 0:
+        return 0
+    
+    # 计算时间差异
+    time_diff = current_start - ref_start
+    
+    # 调整策略：分数差异越大，调整越明显，但有上限
+    max_adjustment = min(50, abs(time_diff) * 0.3)  # 最大调整0.5秒
+    adjustment_ratio = min(score_diff * 2, 1.0)  # 调整比例
+    
+    adjustment = int(max_adjustment * adjustment_ratio)
+    
+    # 如果当前时间明显早于参考时间，适当延后
+    if time_diff < -100:  # 早于参考时间1秒以上
+        return adjustment
+    elif time_diff > 100:  # 晚于参考时间1秒以上
+        return -adjustment
+    
+    return 0
+
+def is_adjustment_valid(new_start, new_end, high_score_times):
+    """
+    验证调整后的时间是否合理
+    """
+    # 基本合理性检查
+    if new_start >= new_end:
+        return False
+    
+    # 检查是否与高分项目时间冲突
+    for ref_start, ref_end, _ in high_score_times:
+        # 避免严重重叠
+        if (new_start < ref_end and new_end > ref_start):
+            overlap = min(new_end, ref_end) - max(new_start, ref_start)
+            if overlap > (new_end - new_start) * 0.5:  # 重叠超过50%
+                return False
+    
+    return True
 
 if __name__ == "__main__":
     main()

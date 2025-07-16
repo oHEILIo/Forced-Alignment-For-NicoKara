@@ -1,27 +1,11 @@
 from janome.tokenizer import Tokenizer
 import pykakasi
 import re
+from utils import is_english, is_kanji, is_hiragana, is_katakana, is_kana
 
+# Initialize tokenizers once for better performance
 kks = pykakasi.kakasi()
 tokenizer = Tokenizer()
-
-def is_english(text):
-    return bool(re.match(r'^[a-zA-Z]+$', text))
-
-def is_kanji(char):
-    return ('\u4E00' <= char <= '\u9FFF' or '\u3400' <= char <= '\u4DBF' or
-            '\uF900' <= char <= '\uFAFF' or char == '\u3005')
-
-def is_hiragana(char):
-    return '\u3040' <= char <= '\u309F'
-
-def is_katakana(char):
-    return '\u30A0' <= char <= '\u30FF'
-
-def is_kana(char):
-    if char in ['・', '゠', 'ー']:
-        return False
-    return is_hiragana(char) or is_katakana(char)
 
 def match_token(surface, phonetic):
     result = []
